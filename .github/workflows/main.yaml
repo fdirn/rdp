@@ -1,0 +1,159 @@
+name: Yanzz RDP (ngrok)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Core RDP Settings
+        shell: pwsh
+        run: |
+          # Enable Remote Desktop and (optionally) disable NLA if you need plain RDP access
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-ngrok" -ErrorAction SilentlyContinue
+          
+          # Allow incoming RDP on 3389 (runner firewall)
+          netsh advfirewall firewall add rule name="RDP-ngrok" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          # Restart Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User with Secure Password
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          if (-not (Get-LocalUser -Name "Yanzz" -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name "Yanzz" -Password $securePass -AccountNeverExpires
+          } else {
+            # if exists, try to set the password
+            $u = Get-LocalUser -Name "Yanzz"
+            $u | Set-LocalUser -Password $securePass
+          }
+
+          Add-LocalGroupMember -Group "Administrators" -Member "Yanzz"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Yanzz"
+          
+          # Export credentials to subsequent steps
+          "RDP_CREDS=User: Yanzz | Password: $password" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+          if (-not (Get-LocalUser -Name "Yanzz")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Download & Install ngrok
+        shell: pwsh
+        run: |
+          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"
+          $zip = "$env:TEMP\ngrok.zip"
+          $dest = "$env:TEMP\ngrok"
+          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zip -UseBasicParsing
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $ngrokExe = Join-Path $dest "ngrok.exe"
+          if (-not (Test-Path $ngrokExe)) {
+            Write-Error "ngrok binary not found after extracting $zip"
+            exit 1
+          }
+          # Authtoken (must be set in repo secrets as NGROK_AUTHTOKEN)
+          & $ngrokExe authtoken $env:NGROK_AUTHTOKEN
+          # Persist ngrok path to env for later steps
+          "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - name: Start ngrok TCP tunnel (3389) and obtain public endpoint
+        shell: pwsh
+        run: |
+          $ngrokExe = $env:NGROK_EXE
+          if (-not $ngrokExe) { Write-Error "NGROK_EXE not set"; exit 1 }
+
+          # start ngrok in background (TCP tunnel on 3389). Use JSON log format so API responds reliably.
+          Start-Process -FilePath $ngrokExe -ArgumentList "tcp 3389 --log=stdout --log-format=json" -WindowStyle Hidden -PassThru | Out-Null
+
+          # Wait for ngrok local API and tunnel to appear
+          $public = $null
+          $retries = 0
+          while (-not $public -and $retries -lt 30) {
+            try {
+              $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
+              foreach ($t in $tunnels.tunnels) {
+                if ($t.public_url -like "tcp://*") {
+                  $public = $t.public_url
+                  break
+                }
+              }
+            } catch {
+              # API not up yet
+            }
+            Start-Sleep -Seconds 2
+            $retries++
+          }
+
+          if (-not $public) {
+            Write-Error "ngrok tunnel not available after waiting."
+            exit 1
+          }
+
+          # Public will be like tcp://0.tcp.ngrok.io:XXXXX
+          # export to env for later steps
+          "NGROK_PUBLIC=$public" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          Write-Host "ngrok public endpoint: $public"
+
+      - name: Verify RDP Accessibility via ngrok endpoint
+        shell: pwsh
+        run: |
+          $public = $env:NGROK_PUBLIC
+          if (-not $public) { Write-Error "NGROK_PUBLIC not set"; exit 1 }
+
+          $clean = $public.Replace("tcp://","")
+          $parts = $clean.Split(":")
+          $host = $parts[0]
+          $port = [int]$parts[1]
+
+          Write-Host "Testing TCP connectivity to $host:$port (ngrok)"
+          $test = Test-NetConnection -ComputerName $host -Port $port -InformationLevel Quiet
+          if (-not $test) {
+            Write-Error "TCP connection to RDP through ngrok failed."
+            exit 1
+          }
+          Write-Host "TCP connectivity successful!"
+
+      - name: Maintain Connection (show access info)
+        shell: pwsh
+        run: |
+          Write-Host "`n=== RDP ACCESS (ngrok) ==="
+          Write-Host "ngrok endpoint: $env:NGROK_PUBLIC"
+          Write-Host "Credentials: $env:RDP_CREDS"
+          Write-Host "============================`n"
+
+          # Keep runner active until manually cancelled (or workflow timeout)
+          while ($true) {
+            Write-Host "[$(Get-Date -Format o)] RDP via ngrok active. Use Cancel workflow in GitHub to stop."
+            Start-Sleep -Seconds 300
+          )
