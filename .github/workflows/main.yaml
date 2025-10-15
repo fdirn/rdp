@@ -49,7 +49,6 @@ jobs:
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'Yanzz'
 
           "RDP_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-          "RDP_CREDS=User: Yanzz | Password: $password" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Verify local RDP service
         shell: pwsh
@@ -78,58 +77,45 @@ jobs:
           & $ngrokExe authtoken $env:NGROK_AUTHTOKEN
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-      - name: Start ngrok TCP tunnel (3389) and obtain public endpoint
+      - name: Start ngrok TCP tunnel (read endpoint from stdout)
         shell: pwsh
         run: |
           $ngrokExe = $env:NGROK_EXE
           if (-not $ngrokExe) { Write-Error "NGROK_EXE not set"; exit 1 }
 
-          # Info versi (aman dipanggil)
           & $ngrokExe version
 
-          # Siapkan log & jalankan ngrok (flag dulu, baru subcommand)
           $logDir  = "$env:TEMP\ngrok"
           New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-          $logFile = Join-Path $logDir "ngrok.log"
+          $logFile = Join-Path $logDir "ngrok_stdout.log"
 
-          Write-Host "Starting ngrok (region ap). Log: $logFile"
-          $args = @("--log=$logFile", "--log-format=json", "--region=ap", "tcp", "3389")
-          $p = Start-Process -FilePath $ngrokExe -ArgumentList $args -WindowStyle Hidden -PassThru
+          # Jalankan ngrok foreground; log ke stdout (ditangkap ke file), region Asia
+          $args = @("--log=stdout", "--log-format=term", "--region=ap", "tcp", "3389")
+          $p = Start-Process -FilePath $ngrokExe -ArgumentList $args -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru
           Write-Host "ngrok PID: $($p.Id)"
+          
+          # Stream beberapa baris log awal (biar kelihatan)
+          Start-Sleep -Seconds 2
+          if (Test-Path $logFile) { Get-Content $logFile -Tail 20 | Write-Host }
 
-          # Stream log secara paralel (non-blocking)
-          Start-Job -ScriptBlock {
-            param($f) Get-Content -Path $f -Wait -Tail 50
-          } -ArgumentList $logFile | Out-Null
-
-          # Tunggu API siap & ambil public_url; fail cepat kalau ada error di log
-          $public  = $null
-          $retries = 0
-          while (-not $public -and $retries -lt 40) {  # ~2 menit (40 x 3s)
-            try {
-              $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 2
-              foreach ($t in $resp.tunnels) {
-                if ($t.public_url -like "tcp://*") { $public = $t.public_url; break }
-              }
-            } catch { }
-
-            # Deteksi error dari log untuk fail cepat
+          # Tunggu sampai muncul 'tcp://...' di log
+          $public = $null
+          $deadline = (Get-Date).AddMinutes(2)
+          while (-not $public -and (Get-Date) -lt $deadline) {
             if (Test-Path $logFile) {
-              $tail = (Get-Content $logFile -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
-              if ($tail -match '"lvl":"(warn|error|crit)"' -or $tail -match 'ERR' -or $tail -match 'error') {
+              $text = (Get-Content $logFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
+              # cari pola tcp://host:port
+              $m = [regex]::Match($text, 'tcp://[^\s"]+')
+              if ($m.Success) { $public = $m.Value; break }
+              # Deteksi error cepat di log
+              if ($text -match '(not\s+allowed|forbidden|unauthorized|ERR|error)') {
                 Write-Host "==== ngrok recent log ===="
-                Write-Host $tail
-                if ($tail -match 'tcp' -and $tail -match 'not.*allowed') {
-                  Write-Error "Ngrok: TCP tunnel tidak diizinkan pada akun/plan ini."
-                } else {
-                  Write-Error "Ngrok error terdeteksi pada log. Gagal start tunnel."
-                }
+                Write-Host $text
+                Write-Error "Ngrok reported an error in log; cannot obtain tcp endpoint."
                 exit 1
               }
             }
-
-            if (-not $public) { Start-Sleep -Seconds 3 }
-            $retries++
+            Start-Sleep -Seconds 3
           }
 
           if (-not $public) {
@@ -142,13 +128,12 @@ jobs:
           "NGROK_PUBLIC=$public" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           Write-Host "✅ ngrok public endpoint: $public"
 
-          # Parse host:port untuk step berikut
           $clean = $public.Replace("tcp://","")
           $parts = $clean.Split(":")
           "TUNNEL_HOST=$($parts[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "TUNNEL_PORT=$($parts[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-      - name: Verify RDP Accessibility via ngrok endpoint
+      - name: Verify RDP via ngrok endpoint
         shell: pwsh
         run: |
           $host = $env:TUNNEL_HOST
@@ -205,4 +190,3 @@ jobs:
             Write-Host "[$(Get-Date -Format o)] RDP via ngrok active. Cancel the workflow to stop."
             Start-Sleep -Seconds 300
           }
-  
