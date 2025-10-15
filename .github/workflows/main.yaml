@@ -83,35 +83,66 @@ jobs:
         run: |
           $ngrokExe = $env:NGROK_EXE
           if (-not $ngrokExe) { Write-Error "NGROK_EXE not set"; exit 1 }
+
+          # Info versi (aman dipanggil)
           & $ngrokExe version
-          & $ngrokExe config check
+
+          # Siapkan log & jalankan ngrok (flag dulu, baru subcommand)
           $logDir  = "$env:TEMP\ngrok"
           New-Item -ItemType Directory -Force -Path $logDir | Out-Null
           $logFile = Join-Path $logDir "ngrok.log"
-          Write-Host "Starting ngrok (region ap) and logging to $logFile ..."
+
+          Write-Host "Starting ngrok (region ap). Log: $logFile"
           $args = @("--log=$logFile", "--log-format=json", "--region=ap", "tcp", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args -WindowStyle Hidden -PassThru
           Write-Host "ngrok PID: $($p.Id)"
+
+          # Stream log secara paralel (non-blocking)
+          Start-Job -ScriptBlock {
+            param($f) Get-Content -Path $f -Wait -Tail 50
+          } -ArgumentList $logFile | Out-Null
+
+          # Tunggu API siap & ambil public_url; fail cepat kalau ada error di log
           $public  = $null
           $retries = 0
-          while (-not $public -and $retries -lt 60) {
+          while (-not $public -and $retries -lt 40) {  # ~2 menit (40 x 3s)
             try {
               $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 2
               foreach ($t in $resp.tunnels) {
                 if ($t.public_url -like "tcp://*") { $public = $t.public_url; break }
               }
             } catch { }
+
+            # Deteksi error dari log untuk fail cepat
+            if (Test-Path $logFile) {
+              $tail = (Get-Content $logFile -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
+              if ($tail -match '"lvl":"(warn|error|crit)"' -or $tail -match 'ERR' -or $tail -match 'error') {
+                Write-Host "==== ngrok recent log ===="
+                Write-Host $tail
+                if ($tail -match 'tcp' -and $tail -match 'not.*allowed') {
+                  Write-Error "Ngrok: TCP tunnel tidak diizinkan pada akun/plan ini."
+                } else {
+                  Write-Error "Ngrok error terdeteksi pada log. Gagal start tunnel."
+                }
+                exit 1
+              }
+            }
+
             if (-not $public) { Start-Sleep -Seconds 3 }
             $retries++
           }
+
           if (-not $public) {
             Write-Host "==== ngrok last 200 log lines ===="
             if (Test-Path $logFile) { Get-Content $logFile -Tail 200 | Write-Host }
-            Write-Error "ngrok tunnel not available after waiting."
+            Write-Error "Ngrok tunnel tidak tersedia setelah menunggu."
             exit 1
           }
+
           "NGROK_PUBLIC=$public" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-          Write-Host "ngrok public endpoint: $public"
+          Write-Host "✅ ngrok public endpoint: $public"
+
+          # Parse host:port untuk step berikut
           $clean = $public.Replace("tcp://","")
           $parts = $clean.Split(":")
           "TUNNEL_HOST=$($parts[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
@@ -174,3 +205,4 @@ jobs:
             Write-Host "[$(Get-Date -Format o)] RDP via ngrok active. Cancel the workflow to stop."
             Start-Sleep -Seconds 300
           }
+  
