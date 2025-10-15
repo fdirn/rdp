@@ -1,4 +1,4 @@
-name: Yanzz RDP (ngrok)
+name: Yanzz RDP (ngrok v2)
 
 on:
   workflow_dispatch:
@@ -61,10 +61,10 @@ jobs:
           if (-not $ok) { Write-Error "RDP (3389) not listening locally."; exit 1 }
           Write-Host "RDP local OK (3389)."
 
-      - name: Download & Install ngrok
+      - name: Download & Install ngrok (v2)
         shell: pwsh
         run: |
-          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"
+          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"  # v2.x
           $zip  = "$env:TEMP\ngrok.zip"
           $dest = "$env:TEMP\ngrok"
           Invoke-WebRequest -Uri $ngrokUrl -OutFile $zip -UseBasicParsing
@@ -73,7 +73,7 @@ jobs:
           $ngrokExe = Join-Path $dest "ngrok.exe"
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
 
-          # HARD-CODED AUTHTOKEN (sesuai permintaan — hati2 security!)
+          # Hardcoded authtoken (sesuai permintaan) — hati-hati security
           & $ngrokExe authtoken '33fhpiZko6IDc6ZqUaBrcs6fBRH_7EoRfL4vt1zJCHEggYK54'
 
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
@@ -90,18 +90,17 @@ jobs:
           $outFile = Join-Path $logDir "ngrok_out.log"
           $errFile = Join-Path $logDir "ngrok_err.log"
 
-          # Jalankan ngrok tanpa flag log supaya tidak kena error flag.
-          # Region Asia untuk latensi lebih rendah dari Indonesia.
-          $args = @("--region=ap", "tcp", "3389")
+          # *** PENTING (ngrok v2): flags sesudah subcommand, dan pakai single dash (-region, -log, ...) ***
+          $args = @("tcp", "-region=ap", "-log=stdout", "-log-format=term", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args `
                -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
           Write-Host "ngrok PID: $($p.Id)"
 
           Start-Sleep -Seconds 2
-          if (Test-Path $outFile) { Get-Content $outFile -Tail 20 | Write-Host }
-          if (Test-Path $errFile) { Get-Content $errFile -Tail 20 | Write-Host }
+          if (Test-Path $outFile) { Get-Content $outFile -Tail 50 | Write-Host }
+          if (Test-Path $errFile) { Get-Content $errFile -Tail 50 | Write-Host }
 
-          # Tunggu tcp://host:port muncul di log (stdout/stderr)
+          # Tunggu tcp://host:port muncul di log
           $public   = $null
           $deadline = (Get-Date).AddMinutes(2)
           while (-not $public -and (Get-Date) -lt $deadline) {
