@@ -61,11 +61,10 @@ jobs:
           if (-not $ok) { Write-Error "RDP (3389) not listening locally."; exit 1 }
           Write-Host "RDP local OK (3389)."
 
-      - name: Download & Install ngrok (then upgrade to v3)
+      - name: Download & Install ngrok (v3 langsung)
         shell: pwsh
         run: |
-          # Download ngrok (bootstrap v2) kemudian upgrade via 'ngrok update' → v3.x terbaru
-          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"
+          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
           $zip  = "$env:TEMP\ngrok.zip"
           $dest = "$env:TEMP\ngrok"
           Invoke-WebRequest -Uri $ngrokUrl -OutFile $zip -UseBasicParsing
@@ -74,14 +73,8 @@ jobs:
           $ngrokExe = Join-Path $dest "ngrok.exe"
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
 
-          # Hardcoded authtoken (permintaan kamu) — HATI2 keamanan bila repo public
           & $ngrokExe authtoken '33fhpiZko6IDc6ZqUaBrcs6fBRH_7EoRfL4vt1zJCHEggYK54'
-
-          # Upgrade agen ke v3 agar cocok dg requirement akun kamu
-          & $ngrokExe update
-          # Cetak versi setelah update
           & $ngrokExe version
-
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Start ngrok TCP tunnel (v3 syntax; parse stdout/stderr)
