@@ -1,4 +1,4 @@
-name: Yanzz RDP (ngrok v2)
+name: Yanzz RDP (ngrok v3)
 
 on:
   workflow_dispatch:
@@ -61,10 +61,11 @@ jobs:
           if (-not $ok) { Write-Error "RDP (3389) not listening locally."; exit 1 }
           Write-Host "RDP local OK (3389)."
 
-      - name: Download & Install ngrok (v2)
+      - name: Download & Install ngrok (then upgrade to v3)
         shell: pwsh
         run: |
-          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"  # v2.x
+          # Download ngrok (bootstrap v2) kemudian upgrade via 'ngrok update' → v3.x terbaru
+          $ngrokUrl = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip"
           $zip  = "$env:TEMP\ngrok.zip"
           $dest = "$env:TEMP\ngrok"
           Invoke-WebRequest -Uri $ngrokUrl -OutFile $zip -UseBasicParsing
@@ -73,40 +74,44 @@ jobs:
           $ngrokExe = Join-Path $dest "ngrok.exe"
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
 
-          # Hardcoded authtoken (sesuai permintaan) — hati-hati security
+          # Hardcoded authtoken (permintaan kamu) — HATI2 keamanan bila repo public
           & $ngrokExe authtoken '33fhpiZko6IDc6ZqUaBrcs6fBRH_7EoRfL4vt1zJCHEggYK54'
+
+          # Upgrade agen ke v3 agar cocok dg requirement akun kamu
+          & $ngrokExe update
+          # Cetak versi setelah update
+          & $ngrokExe version
 
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-      - name: Start ngrok TCP tunnel (parse stdout/stderr)
+      - name: Start ngrok TCP tunnel (v3 syntax; parse stdout/stderr)
         shell: pwsh
         run: |
           $ngrokExe = $env:NGROK_EXE
           if (-not $ngrokExe) { Write-Error "NGROK_EXE not set"; exit 1 }
-          & $ngrokExe version
 
           $logDir  = "$env:TEMP\ngrok"
           New-Item -ItemType Directory -Force -Path $logDir | Out-Null
           $outFile = Join-Path $logDir "ngrok_out.log"
           $errFile = Join-Path $logDir "ngrok_err.log"
 
-          # *** PENTING (ngrok v2): flags sesudah subcommand, dan pakai single dash (-region, -log, ...) ***
-          $args = @("tcp", "-region=ap", "-log=stdout", "-log-format=term", "3389")
+          # v3: flags di depan subcommand, pakai '--'
+          $args = @("--region=ap", "--log=stdout", "tcp", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args `
                -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
           Write-Host "ngrok PID: $($p.Id)"
 
           Start-Sleep -Seconds 2
-          if (Test-Path $outFile) { Get-Content $outFile -Tail 50 | Write-Host }
-          if (Test-Path $errFile) { Get-Content $errFile -Tail 50 | Write-Host }
+          if (Test-Path $outFile) { Get-Content $outFile -Tail 40 | Write-Host }
+          if (Test-Path $errFile) { Get-Content $errFile -Tail 40 | Write-Host }
 
-          # Tunggu tcp://host:port muncul di log
+          # Tunggu pola tcp://host:port muncul di stdout/stderr
           $public   = $null
-          $deadline = (Get-Date).AddMinutes(2)
+          $deadline = (Get-Date).AddMinutes(3)
           while (-not $public -and (Get-Date) -lt $deadline) {
             $text = ""
-            if (Test-Path $outFile) { $text += ((Get-Content $outFile -Tail 200 -ErrorAction SilentlyContinue) -join "`n") }
-            if (Test-Path $errFile) { $text += "`n" + ((Get-Content $errFile -Tail 200 -ErrorAction SilentlyContinue) -join "`n") }
+            if (Test-Path $outFile) { $text += ((Get-Content $outFile -Tail 400 -ErrorAction SilentlyContinue) -join "`n") }
+            if (Test-Path $errFile) { $text += "`n" + ((Get-Content $errFile -Tail 400 -ErrorAction SilentlyContinue) -join "`n") }
 
             $m = [regex]::Match($text, 'tcp://[^\s"]+')
             if ($m.Success) { $public = $m.Value; break }
@@ -122,9 +127,9 @@ jobs:
 
           if (-not $public) {
             Write-Host "==== ngrok last logs (stdout) ===="
-            if (Test-Path $outFile) { Get-Content $outFile -Tail 200 | Write-Host }
+            if (Test-Path $outFile) { Get-Content $outFile -Tail 400 | Write-Host }
             Write-Host "==== ngrok last logs (stderr) ===="
-            if (Test-Path $errFile) { Get-Content $errFile -Tail 200 | Write-Host }
+            if (Test-Path $errFile) { Get-Content $errFile -Tail 400 | Write-Host }
             Write-Error "Ngrok tunnel tidak tersedia setelah menunggu."
             exit 1
           }
