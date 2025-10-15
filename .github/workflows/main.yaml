@@ -14,16 +14,13 @@ jobs:
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          # Enable RDP + relax security for easier external client connection (NLA off)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
 
-          # Firewall
           netsh advfirewall firewall delete rule name="RDP-ngrok" | Out-Null
           netsh advfirewall firewall add rule name="RDP-ngrok" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-          # Restart RDP service
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
@@ -44,19 +41,17 @@ jobs:
           $password = -join ($raw | Sort-Object { Get-Random })
           $secure   = ConvertTo-SecureString $password -AsPlainText -Force
 
-          if (-not (Get-LocalUser -Name "Yanzz" -ErrorAction SilentlyContinue)) {
-            New-LocalUser -Name "Yanzz" -Password $secure -AccountNeverExpires
+          if (-not (Get-LocalUser -Name 'Yanzz' -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name 'Yanzz' -Password $secure -AccountNeverExpires
           } else {
-            (Get-LocalUser -Name "Yanzz") | Set-LocalUser -Password $secure
+            (Get-LocalUser -Name 'Yanzz') | Set-LocalUser -Password $secure
           }
 
-          Add-LocalGroupMember -Group "Administrators" -Member "Yanzz"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Yanzz"
+          Add-LocalGroupMember -Group 'Administrators' -Member 'Yanzz'
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'Yanzz'
 
           "RDP_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "RDP_CREDS=User: Yanzz | Password: $password" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-
-          Get-LocalUser -Name "Yanzz" | Format-Table Name,Enabled,Description
 
       - name: Verify local RDP service
         shell: pwsh
@@ -81,12 +76,8 @@ jobs:
           Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
           Expand-Archive -Path $zip -DestinationPath $dest -Force
           $ngrokExe = Join-Path $dest "ngrok.exe"
-
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
-
-          # Save authtoken to config
           & $ngrokExe authtoken $env:NGROK_AUTHTOKEN
-
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Start ngrok TCP tunnel (3389) and obtain public endpoint
@@ -103,7 +94,6 @@ jobs:
           $logFile = Join-Path $logDir "ngrok.log"
 
           Write-Host "Starting ngrok (region ap) and logging to $logFile ..."
-          # flags dulu, baru subcommand 'tcp' dan port
           $args = @("--log=$logFile", "--log-format=json", "--region=ap", "tcp", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args -WindowStyle Hidden -PassThru
           Write-Host "ngrok PID: $($p.Id)"
@@ -129,9 +119,8 @@ jobs:
           }
 
           "NGROK_PUBLIC=$public" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-          Write-Host "✅ ngrok public endpoint: $public"
+          Write-Host "ngrok public endpoint: $public"
 
-          # Parse host & port untuk step berikut
           $clean = $public.Replace("tcp://","")
           $parts = $clean.Split(":")
           "TUNNEL_HOST=$($parts[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
@@ -150,8 +139,8 @@ jobs:
       - name: Create .rdp file for download
         shell: pwsh
         run: |
-          $host = $env:TUNNEL_HOST
-          $port = $env:TUNNEL_PORT
+          $host = $env.TUNNEL_HOST
+          $port = $env.TUNNEL_PORT
           $path = Join-Path $env:RUNNER_TEMP "Yanzz_ngrok.rdp"
           @"
 screen mode id:i:2
@@ -167,7 +156,7 @@ authentication level:i:0
 compression:i:1
 networkautodetect:i:1
 audiocapturemode:i:0
-"| Set-Content -Path $path -Encoding ASCII
+"@ | Set-Content -Path $path -Encoding ASCII
           "RDP_FILE=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           Write-Host "RDP file created at $path"
 
@@ -182,12 +171,13 @@ audiocapturemode:i:0
       - name: Maintain Connection (show access info)
         shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS (ngrok) ==="
+          Write-Host ""
+          Write-Host "=== RDP ACCESS (ngrok) ==="
           Write-Host "Endpoint : $env:NGROK_PUBLIC"
           Write-Host "Username : Yanzz"
           Write-Host "Password : $env:RDP_PASS"
-          Write-Host "RDP file : (check Actions → Artifacts → Yanzz_ngrok_rdp)"
-          Write-Host "============================`n"
+          Write-Host "RDP file : (Actions → Artifacts → Yanzz_ngrok_rdp)"
+          Write-Host "=========================="
           while ($true) {
             Write-Host "[$(Get-Date -Format o)] RDP via ngrok active. Cancel the workflow to stop."
             Start-Sleep -Seconds 300
