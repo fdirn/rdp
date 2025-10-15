@@ -64,6 +64,7 @@ jobs:
       - name: Download & Install ngrok (v3 langsung)
         shell: pwsh
         run: |
+          # Download ngrok v3
           $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
           $zip  = "$env:TEMP\ngrok.zip"
           $dest = "$env:TEMP\ngrok"
@@ -73,11 +74,12 @@ jobs:
           $ngrokExe = Join-Path $dest "ngrok.exe"
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
 
+          # Set authtoken (hardcoded sesuai permintaan — hati² kalau repo public)
           & $ngrokExe authtoken '33fhpiZko6IDc6ZqUaBrcs6fBRH_7EoRfL4vt1zJCHEggYK54'
           & $ngrokExe version
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-      - name: Start ngrok TCP tunnel (v3 syntax; parse stdout/stderr)
+      - name: Start ngrok TCP tunnel (parse stdout/stderr)
         shell: pwsh
         run: |
           $ngrokExe = $env:NGROK_EXE
@@ -88,8 +90,8 @@ jobs:
           $outFile = Join-Path $logDir "ngrok_out.log"
           $errFile = Join-Path $logDir "ngrok_err.log"
 
-          # v3: flags di depan subcommand, pakai '--'
-          $args = @("--region=ap", "--log=stdout", "tcp", "3389")
+          # Minimalis: tanpa flags (region auto)
+          $args = @("tcp", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args `
                -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
           Write-Host "ngrok PID: $($p.Id)"
@@ -98,7 +100,7 @@ jobs:
           if (Test-Path $outFile) { Get-Content $outFile -Tail 40 | Write-Host }
           if (Test-Path $errFile) { Get-Content $errFile -Tail 40 | Write-Host }
 
-          # Tunggu pola tcp://host:port muncul di stdout/stderr
+          # Tunggu sampai keluar 'tcp://host:port'
           $public   = $null
           $deadline = (Get-Date).AddMinutes(3)
           while (-not $public -and (Get-Date) -lt $deadline) {
