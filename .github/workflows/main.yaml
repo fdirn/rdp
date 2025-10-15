@@ -7,8 +7,6 @@ jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
-    env:
-      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
 
     steps:
       - name: Configure Core RDP Settings
@@ -17,10 +15,8 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
-
           netsh advfirewall firewall delete rule name="RDP-ngrok" | Out-Null
           netsh advfirewall firewall add rule name="RDP-ngrok" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
@@ -76,15 +72,17 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $dest -Force
           $ngrokExe = Join-Path $dest "ngrok.exe"
           if (-not (Test-Path $ngrokExe)) { Write-Error "ngrok binary not found"; exit 1 }
-          & $ngrokExe authtoken $env:NGROK_AUTHTOKEN
+
+          # HARD-CODED AUTHTOKEN (sesuai permintaan — hati2 security!)
+          & $ngrokExe authtoken '33fhpiZko6IDc6ZqUaBrcs6fBRH_7EoRfL4vt1zJCHEggYK54'
+
           "NGROK_EXE=$ngrokExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-      - name: Start ngrok TCP tunnel (read endpoint from stdout)
+      - name: Start ngrok TCP tunnel (parse stdout/stderr)
         shell: pwsh
         run: |
           $ngrokExe = $env:NGROK_EXE
           if (-not $ngrokExe) { Write-Error "NGROK_EXE not set"; exit 1 }
-
           & $ngrokExe version
 
           $logDir  = "$env:TEMP\ngrok"
@@ -92,33 +90,31 @@ jobs:
           $outFile = Join-Path $logDir "ngrok_out.log"
           $errFile = Join-Path $logDir "ngrok_err.log"
 
-          # Jalankan ngrok foreground; region Asia; stdout/stderr dipisah
-          $args = @("--log=stdout", "--log-format=term", "--region=ap", "tcp", "3389")
+          # Jalankan ngrok tanpa flag log supaya tidak kena error flag.
+          # Region Asia untuk latensi lebih rendah dari Indonesia.
+          $args = @("--region=ap", "tcp", "3389")
           $p = Start-Process -FilePath $ngrokExe -ArgumentList $args `
                -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
           Write-Host "ngrok PID: $($p.Id)"
 
           Start-Sleep -Seconds 2
           if (Test-Path $outFile) { Get-Content $outFile -Tail 20 | Write-Host }
-          if (Test-Path $errFile) { Get-Content $errFile -Tail 5  | Write-Host }
+          if (Test-Path $errFile) { Get-Content $errFile -Tail 20 | Write-Host }
 
-          # Tunggu pola tcp://host:port muncul di stdout
+          # Tunggu tcp://host:port muncul di log (stdout/stderr)
           $public   = $null
           $deadline = (Get-Date).AddMinutes(2)
           while (-not $public -and (Get-Date) -lt $deadline) {
             $text = ""
-            if (Test-Path $outFile) {
-              $text = (Get-Content $outFile -Tail 200 -ErrorAction SilentlyContinue) -join "`n"
-              $m = [regex]::Match($text, 'tcp://[^\s"]+')
-              if ($m.Success) { $public = $m.Value; break }
-            }
-            # Deteksi error cepat
-            $errTail = ""
-            if (Test-Path $errFile) { $errTail = (Get-Content $errFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n" }
-            $combined = $text + "`n" + $errTail
-            if ($combined -match '(not\s+allowed|forbidden|unauthorized|rate\s*limit|ERR|error)') {
+            if (Test-Path $outFile) { $text += ((Get-Content $outFile -Tail 200 -ErrorAction SilentlyContinue) -join "`n") }
+            if (Test-Path $errFile) { $text += "`n" + ((Get-Content $errFile -Tail 200 -ErrorAction SilentlyContinue) -join "`n") }
+
+            $m = [regex]::Match($text, 'tcp://[^\s"]+')
+            if ($m.Success) { $public = $m.Value; break }
+
+            if ($text -match '(not\s+allowed|forbidden|unauthorized|rate\s*limit|ERR|error)') {
               Write-Host "==== ngrok recent logs ===="
-              Write-Host $combined
+              Write-Host $text
               Write-Error "Ngrok reported an error; cannot obtain tcp endpoint."
               exit 1
             }
